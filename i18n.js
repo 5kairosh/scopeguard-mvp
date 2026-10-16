@@ -14,7 +14,7 @@
   const monthNames = {kk:['қаң.','ақп.','нау.','сәу.','мам.','мау.','шіл.','там.','қыр.','қаз.','қар.','жел.'],ru:['янв.','фев.','мар.','апр.','мая','июн.','июл.','авг.','сен.','окт.','ноя.','дек.'],en:['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']};
   let language='kk';
   try {const stored=root.localStorage?.getItem('scopeguard-language');if(dictionaries[stored])language=stored;}catch{}
-  function t(key,values={}){const text=dictionaries[language][key]??kk[key]??key;return text.replace(/\{(\w+)\}/g,(_,name)=>String(values[name]??''));}
+  function t(key,values={}){let text=dictionaries[language][key]??kk[key]??key;if(language==='en'&&Number(values.n)===1&&key==='days')text='{n} day';if(language==='en'&&Number(values.n)===1&&key==='hours')text='{n} hour';return text.replace(/\{(\w+)\}/g,(_,name)=>String(values[name]??''));}
   function setLanguage(value){if(!dictionaries[value])return;language=value;try{root.localStorage?.setItem('scopeguard-language',value);}catch{}}
   function date(value){const d=new Date(value.length===10?value+'T12:00:00Z':value);return `${d.getUTCDate()} ${monthNames[language][d.getUTCMonth()]} ${d.getUTCFullYear()}`;}
   const api={t,date,setLanguage,getLanguage:()=>language,dictionaries};root.ScopeI18n=api;if(typeof module!=='undefined')module.exports=api;

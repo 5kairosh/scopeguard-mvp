@@ -1,0 +1,2 @@
+// Public Supabase project settings only. Never put a secret/service-role key here.
+window.SCOPE_CONFIG = { supabaseUrl: 'https://wroykwsokjybkxkncirk.supabase.co', supabasePublishableKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Indyb3lrd3Nva2p5Ymt4a25jaXJrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIxNDQzMzcsImV4cCI6MjEwNzcyMDMzN30.JOHgfrUOH9Mo4thhMSbIXDIB_Yi7eSG0qGKWJo2jQX0' };

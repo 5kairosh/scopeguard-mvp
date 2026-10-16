@@ -1,0 +1,53 @@
+const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
+const {PGlite}=require('@electric-sql/pglite');
+test('database membership, permissions, revisions and selected-option approvals',async()=>{
+ const db=new PGlite();
+ const manager='10000000-0000-4000-8000-000000000001',client='10000000-0000-4000-8000-000000000002',stranger='10000000-0000-4000-8000-000000000003',unverified='10000000-0000-4000-8000-000000000004';
+ try{
+  await db.exec(`create role authenticated; create role anon; create role service_role; create schema auth;
+   create table auth.users(id uuid primary key,email text,email_confirmed_at timestamptz);
+   create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;
+   grant usage on schema auth to authenticated,anon;grant execute on function auth.uid() to authenticated,anon;
+   insert into auth.users values('${manager}','manager@example.test',now()),('${client}','client@example.test',now()),('${stranger}','stranger@example.test',now()),('${unverified}','client@example.test',null);`);
+  await db.exec(fs.readFileSync(path.join(__dirname,'../supabase/migrations/202610160001_scopeguard.sql'),'utf8'));
+  await db.exec(fs.readFileSync(path.join(__dirname,'../supabase/migrations/202610160002_signup_limits.sql'),'utf8'));
+  await db.exec('set role service_role');
+  assert.equal((await db.query("select public.sg_claim_signup('test',1) as allowed")).rows[0].allowed,true);
+  assert.equal((await db.query("select public.sg_claim_signup('test',1) as allowed")).rows[0].allowed,false);
+  await db.exec('reset role');
+  async function as(id){await db.query(`select set_config('request.jwt.claim.sub',$1,false)`,[id]);await db.exec('set role authenticated');}
+  async function mutate(row,action,args){return (await db.query('select * from public.sg_mutate($1,$2,$3,$4::jsonb)',[row.id,row.revision,action,JSON.stringify(args)])).rows[0];}
+  await as(manager);
+  await assert.rejects(()=>db.query("select public.sg_claim_signup('test',100)"),/permission denied/);
+  let row=(await db.query('select * from public.sg_create_project($1::jsonb)',[JSON.stringify({name:'CRM',client:'Client',clientEmail:'client@example.test',budget:500000,deadline:'2026-11-01',requirements:['Contact form']})])).rows[0];
+  await assert.rejects(()=>db.query('select * from public.sg_create_project($1::jsonb)',[JSON.stringify({client:'Client',clientEmail:'client@example.test',budget:100,deadline:'2026-11-01',requirements:['x']})]),/invalidProject/);
+  await assert.rejects(()=>db.query('update public.sg_projects set revision=999'),/permission denied/);
+  await as(stranger);assert.equal((await db.query('select * from public.sg_projects')).rows.length,0);
+  await assert.rejects(()=>mutate(row,'request',{title:'hack',description:'x',reason:'x'}),/notAllowed/);
+  await as(unverified);assert.equal((await db.query('select * from public.sg_projects')).rows.length,0);
+  await as(client);assert.equal((await db.query('select * from public.sg_projects')).rows.length,1);
+  row=await mutate(row,'request',{title:'Live chat',description:'Add support chat',reason:'Help customers'});
+  let request=row.data.requests[0];
+  await assert.rejects(()=>mutate(row,'estimate',{requestId:request.id,options:[]}),/notAllowed/);
+  await as(manager);const stale=structuredClone(row);
+  const options=[{name:'Basic',hours:6,rate:5000,days:1},{name:'Standard',hours:14,rate:5000,days:3},{name:'Complete',hours:24,rate:5000,days:5}];
+  row=await mutate(row,'estimate',{requestId:request.id,options});request=row.data.requests[0];const first=structuredClone(request.estimateHistory[0]);
+  await assert.rejects(()=>mutate(row,'approve',{requestId:request.id,optionId:request.options[0].id}),/notAllowed/);
+  await as(client);
+  await assert.rejects(()=>mutate(stale,'approve',{requestId:request.id,optionId:request.options[0].id}),/staleVersion/);
+  row=await mutate(row,'revision',{requestId:request.id,reason:'Lower price please'});
+  await as(manager);row=await mutate(row,'estimate',{requestId:request.id,options:[{name:'Standard',hours:10,rate:5000,days:2}]});request=row.data.requests[0];
+  assert.deepEqual(request.estimateHistory[0],first);assert.equal(request.estimateHistory.length,2);
+  await as(client);
+  await assert.rejects(()=>mutate(row,'approve',{requestId:request.id,optionId:'not-an-option'}),/chooseOption/);
+  row=await mutate(row,'approve',{requestId:request.id,optionId:request.options[0].id});request=row.data.requests[0];
+  assert.equal(request.status,'approved');assert.equal(request.approvedEstimate.hours,10);
+  assert.deepEqual(request.estimateHistory[0],first);
+  await assert.rejects(()=>mutate(row,'approve',{requestId:request.id,optionId:request.options[0].id}),/alreadyDecided/);
+  await as(manager);row=await mutate(row,'request',{title:'Another change',description:'Something',reason:'Needed'});
+  const next=row.data.requests[1];row=await mutate(row,'estimate',{requestId:next.id,options:[{name:'Basic',hours:3,rate:5000,days:1}]});
+  await as(client);row=await mutate(row,'reject',{requestId:next.id});assert.equal(row.data.requests[1].status,'rejected');
+  await db.exec('set role anon');assert.equal((await db.query("select has_table_privilege('anon','public.sg_projects','SELECT') as allowed")).rows[0].allowed,false);
+  await assert.rejects(()=>db.query('select * from public.sg_projects'),/permission denied/);
+ }finally{await db.close();}
+});

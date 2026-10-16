@@ -1,5 +1,6 @@
 const assert=require('node:assert/strict');
 const I=require('../i18n.js');
+globalThis.ScopeI18n=I;require('../features-i18n.js');
 const M=require('../model.js');
 const project=M.demo().projects[0],original=JSON.stringify(project),before=M.totals(project);
 const keys=Object.keys(I.dictionaries.kk).sort();
@@ -16,3 +17,4 @@ I.setLanguage('en');assert.equal(I.date('2026-11-03'),'3 Nov 2026');
 I.setLanguage('kk');assert.equal(I.date('2026-11-03'),'3 қар. 2026');
 console.log('PASS: complete dictionaries, interpolation, localized dates, unchanged project data and calculations.');
 
+I.setLanguage('en');assert.equal(I.t('email'),'Username');
