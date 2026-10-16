@@ -1,0 +1,24 @@
+const assert=require('node:assert/strict');
+const M=require('../model.js');
+const p=M.demo().projects[0];
+assert.equal(M.totals(p).budget,1260000);
+assert.equal(M.totals(p).deadline,'2026-11-22');
+const newReq=p.requests.find(r=>r.status==='new');
+assert.throws(()=>M.decide(newReq,'approved'));
+const before=M.totals(p);
+M.assess(newReq,{hours:10,rate:5000,days:4});
+assert.equal(M.totals(p).budget,before.budget);
+assert.equal(M.totals(p).deadline,before.deadline);
+M.decide(newReq,'rejected');
+assert.equal(M.totals(p).budget,before.budget);
+assert.equal(M.totals(p).deadline,before.deadline);
+const estimated=p.requests.find(r=>r.status==='assessed');
+M.decide(estimated,'approved');
+assert.equal(M.totals(p).budget,1380000);
+assert.equal(M.totals(p).deadline,'2026-11-25');
+assert.throws(()=>M.decide(estimated,'approved'));
+assert.throws(()=>M.assess(estimated,{hours:2,rate:5000,days:1}));
+assert.throws(()=>M.assess({status:'new'},{hours:-1,rate:5000,days:1}));
+assert.equal(M.addDays('2026-12-31',2),'2027-01-02');
+console.log('PASS: approval, rejection, pending estimates, duplicate decisions, invalid estimates, year rollover.');
+
