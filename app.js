@@ -8,7 +8,7 @@ const date=I.date;
 let state=M.demo(),view='overview',filter='all',role='manager',toastTimer,activeModal=null,toastMessage=null;
 try {const raw=localStorage.getItem(KEY);if(raw){const loaded=JSON.parse(raw);if(loaded.version===1&&Array.isArray(loaded.projects)&&loaded.projects.length&&loaded.projects.every(p=>Array.isArray(p.requests)&&Array.isArray(p.events)&&Array.isArray(p.requirements)&&Number.isFinite(p.budget)))state=loaded;}}catch{setTimeout(()=>toast('loadError'),0);}
 const project=()=>state.projects.find(p=>p.id===state.selected)||state.projects[0];
-let localState=state,cloudMode=false;
+let localState=state,cloudMode=false,sessionUser=null,stopWatch=()=>{},syncStatus='reconnecting',inbox=[],inboxReady=false,refreshPromise=null,refreshAgain=false,writing=false,mutationEpoch=0;
 function save(){if(C.active())return true;state.selected=project().id;try{localStorage.setItem(KEY,JSON.stringify(state));return true;}catch{toast('saveError');return false;}}
 function toast(key,values){toastMessage={key,values};$('#toast').textContent=t(key,values);$('#toast').classList.add('visible');clearTimeout(toastTimer);toastTimer=setTimeout(()=>{$('#toast').classList.remove('visible');toastMessage=null;},4500);}
 function event(key,values){project().events.push({id:crypto.randomUUID(),key,values,actor:role==='manager'?'Менеджер':'Клиент',at:new Date().toISOString()});}
@@ -22,7 +22,7 @@ function eventText(e){
  return text;
 }
 function errorKey(error){if(I.dictionaries.kk[error.message])return error.message;return ({'Бұл сұраудың шешімі қабылданған.':'alreadyDecided','Бағалау мәндері жарамсыз.':'invalidEstimate','Сағат пен тариф оң сан болуы керек.':'positiveEstimate','Алдымен сұрауды бағалау керек.':'assessFirst','Шешім жарамсыз.':'invalidDecision'})[error.message]||'syncError';}
-function modal(key,html,titleValues,prefix=''){activeModal={key,titleValues,prefix};$('#modal-title').textContent=prefix+t(key,titleValues);$('#modal-body').innerHTML=html;localizeStatic($('#modal'));if(!$('#modal').open)$('#modal').showModal();}
+function modal(key,html,titleValues,prefix=''){activeModal={key,titleValues,prefix,projectId:project()?.id,revision:project()?._cloud?.revision};$('#modal-title').textContent=prefix+t(key,titleValues);$('#modal-body').innerHTML=html;localizeStatic($('#modal'));if(!$('#modal').open)$('#modal').showModal();}
 function close(){$('#modal').close();activeModal=null;}
 function localizeStatic(root=document){root.querySelectorAll('[data-i18n]').forEach(el=>el.textContent=t(el.dataset.i18n));root.querySelectorAll('[data-i18n-placeholder]').forEach(el=>el.setAttribute('placeholder',t(el.dataset.i18nPlaceholder)));root.querySelectorAll('[data-i18n-label]').forEach(el=>el.setAttribute('aria-label',t(el.dataset.i18nLabel)));}
 function tag(r){return `<span class="tag ${r.status}" data-i18n="${r.status}">${txt(r.status)}</span>`;}
@@ -88,7 +88,7 @@ $('#new-request').onclick=()=>{
 $('#new-project').onclick=()=>{
  if(!C.active()&&role!=='manager')return;
  modal('newProjectTitle',`<form id="project-form">${field('projectName','name','text','required maxlength="120" data-i18n-placeholder="projectPlaceholder"')}${field('customer','client','text','required maxlength="120"')}${C.active()?field('clientEmail','client-email','text','required minlength="3" maxlength="32" pattern="[A-Za-z0-9][A-Za-z0-9_.-]{2,31}"')+`<p class="field-note" data-i18n="clientEmailNote">${txt('clientEmailNote')}</p>`:''}<div class="form-grid">${field('budgetField','budget','number','min="1" max="1000000000000" step="1" required')}${field('baselineDeadline','deadline','date','min="2000-01-01" max="2100-12-31" required')}</div>${textarea('requirements','requirements','required maxlength="5000" data-i18n-placeholder="requirementsPlaceholder"')}<p class="field-note" data-i18n="requirementsNote">${txt('requirementsNote')}</p>${actions('createProject')}</form>`);
- $('#project-form').onsubmit=async e=>{e.preventDefault();const name=$('#name').value.trim(),client=$('#client').value.trim(),budget=Number($('#budget').value),deadline=$('#deadline').value,requirements=$('#requirements').value.split('\n').map(s=>s.trim()).filter(Boolean),clientEmail=$('#client-email')?.value.trim();if(!name||!client||!requirements.length||!Number.isSafeInteger(budget)||budget<=0){$('#form-error').dataset.errorKey='invalidProject';$('#form-error').textContent=t('invalidProject');return;}const button=e.submitter;button.disabled=true;try{if(C.active()){const p=await C.createProject({name,client,clientEmail,budget,deadline,requirements});state.projects.unshift(p);state.selected=p.id;}else{const p={id:crypto.randomUUID(),name,client,budget,deadline,requirements,requests:[],events:[]};state.projects.push(p);state.selected=p.id;event('eventProject',{name,amount:money(budget)});if(!save())return;}close();view='overview';render();toast('projectCreated');}catch(error){$('#form-error').textContent=t(errorKey(error));}finally{button.disabled=false;}};
+ $('#project-form').onsubmit=async e=>{e.preventDefault();const name=$('#name').value.trim(),client=$('#client').value.trim(),budget=Number($('#budget').value),deadline=$('#deadline').value,requirements=$('#requirements').value.split('\n').map(s=>s.trim()).filter(Boolean),clientEmail=$('#client-email')?.value.trim();if(!name||!client||!requirements.length||!Number.isSafeInteger(budget)||budget<=0){$('#form-error').dataset.errorKey='invalidProject';$('#form-error').textContent=t('invalidProject');return;}const button=e.submitter;button.disabled=true;try{if(C.active()){mutationEpoch++;const p=await C.createProject({name,client,clientEmail,budget,deadline,requirements});mutationEpoch++;state.projects=[p,...state.projects.filter(x=>x.id!==p.id)];state.selected=p.id;}else{const p={id:crypto.randomUUID(),name,client,budget,deadline,requirements,requests:[],events:[]};state.projects.push(p);state.selected=p.id;event('eventProject',{name,amount:money(budget)});if(!save())return;}close();view='overview';render();toast('projectCreated');}catch(error){$('#form-error').textContent=t(errorKey(error));}finally{button.disabled=false;}};
 };
 $('#baseline').onclick=()=>{const p=project();modal('baselineTitle',`<h3>${esc(p.name)}</h3><p class="detail-description" data-customer="${esc(p.client)}">${txt('customerPrefix',{name:p.client})}</p><div class="detail-values"><div><small data-i18n="baselineBudget">${txt('baselineBudget')}</small><strong>${money(p.budget)}</strong></div><div><small data-i18n="baselineDeadline">${txt('baselineDeadline')}</small><strong data-date="${p.deadline}">${date(p.deadline)}</strong></div><div><small data-i18n="requirementsLabel">${txt('requirementsLabel')}</small><strong data-requirements="${p.requirements.length}">${txt('requirementCount',{n:p.requirements.length})}</strong></div></div><div class="detail-label" data-i18n="agreedScope">${txt('agreedScope')}</div><ul class="requirements">${p.requirements.map(x=>`<li>${esc(x)}</li>`).join('')}</ul><div class="notice" data-i18n="baselineNote">${txt('baselineNote')}</div>`);};
 document.querySelectorAll('.nav').forEach(b=>b.onclick=()=>{view=b.dataset.view;render();});$('#project').onchange=e=>{state.selected=e.target.value;filter='all';save();render();};$('#role').onchange=e=>{role=e.target.value;render();toast(role==='client'?'clientMode':'managerMode');};
@@ -103,28 +103,86 @@ $('#export').onclick=()=>{const url=URL.createObjectURL(new Blob([JSON.stringify
 $('#demo').onclick=()=>{modal('resetTitle',`<p class="detail-description" data-i18n="resetWarning">${txt('resetWarning')}</p><div class="modal-actions"><button class="button" id="cancel-reset" data-i18n="cancel">${txt('cancel')}</button><button class="button danger" id="confirm-reset" data-i18n="confirmReset">${txt('confirmReset')}</button></div>`);$('#cancel-reset').onclick=close;$('#confirm-reset').onclick=()=>{state=M.demo();const stored=save();view='overview';filter='all';close();render();if(stored)toast('resetDone');};};
 async function perform(action,args,localChange,successKey){
  const buttons=[...$('#modal').querySelectorAll('button')];buttons.forEach(b=>b.disabled=true);
- try{if(C.active()){const p=project();if(!p?._cloud)throw Error('syncError');const updated=await C.mutate(p,action,args);state.projects=state.projects.map(x=>x.id===updated.id?updated:x);}else{localChange();if(!save())return;}close();render();toast(successKey);}
- catch(error){const key=errorKey(error);if(key==='staleVersion'){close();await refreshCloud();}toast(key);}
- finally{buttons.forEach(b=>b.disabled=false);}
+ try{if(C.active()){const p=project();if(!p?._cloud)throw Error('syncError');if(activeModal?.projectId!==p.id||activeModal?.revision!==p._cloud.revision)throw Error('staleVersion');writing=true;mutationEpoch++;const updated=await C.mutate(p,action,args);state.projects=state.projects.map(x=>x.id===updated.id?updated:x);}else{localChange();if(!save())return;}close();render();toast(successKey);}
+ catch(error){const key=errorKey(error);if(key==='staleVersion'){await refreshCloud(true);warnChangedModal();}toast(key);}
+ finally{writing=false;mutationEpoch++;buttons.forEach(b=>b.disabled=false);if(C.active())void refreshCloud();}
 }
-async function refreshCloud(){if(!C.active())return;try{const projects=await C.projects();state={version:1,selected:state.selected,projects};if(!projects.some(p=>p.id===state.selected))state.selected=projects[0]?.id||'';render();}catch{toast('syncError');}}
+function warnChangedModal(){
+ if(!['request','newRequestTitle','assessTitle','requestRevision'].includes(activeModal?.key)||!activeModal?.revision||!$('#modal').open||$('#remote-warning'))return;
+ const current=state.projects.find(p=>p.id===activeModal.projectId);
+ if(current?._cloud.revision===activeModal.revision)return;
+ $('#modal-body').insertAdjacentHTML('afterbegin',`<div class="notice remote-warning" id="remote-warning" role="status"><p data-i18n="remoteDraft">${txt('remoteDraft')}</p><button type="button" class="button" id="reload-modal" data-i18n="openLatest">${txt('openLatest')}</button></div>`);
+ $('#reload-modal').onclick=()=>{close();render();};
+}
+async function refreshCloud(manual=false){
+ if(!C.active())return;
+ if(refreshPromise){refreshAgain=true;return refreshPromise;}
+ const uid=C.getUser().id;
+ refreshPromise=(async()=>{
+  do{
+   refreshAgain=false;
+   if(writing){refreshAgain=true;return;}
+   try{
+    const readEpoch=mutationEpoch;
+    const [projects,notifications]=await Promise.all([C.projects(),C.notifications()]);
+    if(C.getUser()?.id!==uid)return;
+    if(writing){refreshAgain=true;return;}
+    if(readEpoch!==mutationEpoch){refreshAgain=true;continue;}
+    const changed=JSON.stringify(projects)!==JSON.stringify(state.projects),inboxChanged=JSON.stringify(notifications)!==JSON.stringify(inbox),wasReady=inboxReady;
+    const fresh=notifications.find(n=>!n.read_at&&!inbox.some(old=>old.id===n.id));
+    inbox=notifications;inboxReady=true;state={version:1,selected:state.selected,projects};
+    if(!projects.some(p=>p.id===state.selected))state.selected=projects[0]?.id||'';
+    if(changed)render();else updateAccountUI();
+    warnChangedModal();
+    if(inboxChanged&&activeModal?.key==='notifications')showNotifications();
+    if(fresh&&wasReady&&activeModal?.key!=='notifications')toast('newNotification');
+   }catch{if(C.getUser()?.id===uid){syncStatus='reconnecting';updateAccountUI();if(manual)toast('syncError');}}
+  }while(refreshAgain&&C.getUser()?.id===uid&&!writing);
+ })();
+ try{await refreshPromise;}finally{refreshPromise=null;}
+}
 async function syncSession(){
- if(C.active()){if(!cloudMode)localState=state;cloudMode=true;state={version:1,selected:'',projects:[]};close();await refreshCloud();}
+ const uid=C.getUser()?.id||null;
+ if(uid===sessionUser)return;
+ stopWatch();stopWatch=()=>{};sessionUser=uid;inbox=[];inboxReady=false;
+ if(uid){if(!cloudMode)localState=state;cloudMode=true;state={version:1,selected:'',projects:[]};close();render();await refreshCloud();if(C.getUser()?.id===uid)stopWatch=C.watch(()=>refreshCloud(),status=>{syncStatus=status;updateAccountUI();});}
  else{if(cloudMode)state=localState;cloudMode=false;close();render();}
 }
 function updateAccountUI(){
- const active=C.active();$('#account-button').textContent=t(active?'signOut':'signIn');$('#cloud-refresh').hidden=!active;$('#role').disabled=active;$('.role-control').hidden=active;$('#cloud-role').hidden=!active;$('#cloud-role').textContent=t(role);$('#account-email').textContent=active?C.getUser().email.split('@')[0]:'';$('#account-email').title=active?C.getUser().email.split('@')[0]:'';
+ const active=C.active();$('#notifications-button').hidden=!active;$('#security-button').hidden=!active;$('#sync-status').hidden=!active;$('#sync-status').textContent=t(syncStatus);$('#sync-status').className='sync-status '+syncStatus;const unread=inbox.filter(n=>!n.read_at).length;$('#notifications-button').textContent=t('notifications')+(unread?' ('+unread+')':'');$('#account-button').textContent=t(active?'signOut':'signIn');$('#cloud-refresh').hidden=!active;$('#role').disabled=active;$('.role-control').hidden=active;$('#cloud-role').hidden=!active;$('#cloud-role').textContent=t(role);$('#account-email').textContent=active?C.getUser().email.split('@')[0]:'';$('#account-email').title=active?C.getUser().email.split('@')[0]:'';
  $('.demo-badge').dataset.i18n=active?'cloudMode':'demo';$('.demo-badge').textContent=t(active?'cloudMode':'demo');$('.local-note').dataset.i18n=active?'cloudLocalNote':'localNote';$('.local-note').textContent=t(active?'cloudLocalNote':'localNote');$('footer').dataset.i18n=active?'cloudFooter':'demoFooter';$('footer').textContent=t(active?'cloudFooter':'demoFooter');$('#demo').hidden=active;
+}
+function showRecoveryCode(code){
+ modal('recoveryCode',`<p class="notice" data-i18n="saveRecovery">${txt('saveRecovery')}</p><label for="recovery-code" data-i18n="recoveryCode">${txt('recoveryCode')}</label><textarea id="recovery-code" class="recovery-code" readonly spellcheck="false">${esc(code)}</textarea><p class="field-note" data-i18n="recoveryPrivate">${txt('recoveryPrivate')}</p><div class="modal-actions"><button class="button primary" id="saved-code" data-i18n="savedCode">${txt('savedCode')}</button></div>`);
+ $('#saved-code').onclick=close;
+}
+function securityForm(){
+ modal('accountSecurity',`<p class="notice" data-i18n="recoverySetup">${txt('recoverySetup')}</p><form id="security-form">${field('password','security-password','password','required minlength="10" maxlength="128" autocomplete="current-password"')}${actions('generateCode')}</form>`);
+ $('#security-form').onsubmit=async e=>{e.preventDefault();const password=$('#security-password').value;const button=e.submitter;button.disabled=true;try{showRecoveryCode(await C.generateRecovery(password));}catch(error){$('#form-error').textContent=t(errorKey(error));}finally{button.disabled=false;}};
+}
+function recoveryForm(username=''){
+ modal('resetPassword',`<p class="notice" data-i18n="resetHelp">${txt('resetHelp')}</p><form id="recovery-form">${field('email','recover-user','text',`required autocomplete="username" minlength="3" maxlength="32" value="${esc(username)}"`)}${textarea('recoveryCode','recover-code','required maxlength="100" autocomplete="off" spellcheck="false"')}${field('newPassword','recover-password','password','required minlength="10" maxlength="128" autocomplete="new-password"')}${field('confirmPassword','recover-confirm','password','required minlength="10" maxlength="128" autocomplete="new-password"')}${actions('resetPassword')}</form><button class="text-button" id="back-login" data-i18n="signIn">${txt('signIn')}</button>`);
+ $('#back-login').onclick=()=>authForm();
+ $('#recovery-form').onsubmit=async e=>{e.preventDefault();if($('#recover-password').value!==$('#recover-confirm').value){$('#form-error').textContent=t('passwordMismatch');return;}const button=e.submitter;button.disabled=true;try{const code=await C.resetPassword($('#recover-user').value,$('#recover-code').value,$('#recover-password').value);showRecoveryCode(code);toast('passwordResetDone');}catch(error){$('#form-error').textContent=t(errorKey(error));}finally{button.disabled=false;}};
+}
+function showNotifications(){
+ modal('notifications',`<p class="field-note" data-i18n="notificationHelp">${txt('notificationHelp')}</p>${inbox.some(n=>!n.read_at)?`<button class="button" id="mark-all-read" data-i18n="markAllRead">${txt('markAllRead')}</button>`:''}<div class="notification-list">${inbox.map(n=>`<button class="notification-item ${n.read_at?'':'unread'}" data-notification="${n.id}"><strong>${esc(n.project_name)}</strong><span>${esc(eventText(n.event))}</span><small>${date(n.created_at)} · ${new Date(n.created_at).toLocaleTimeString(I.getLanguage(),{hour:'2-digit',minute:'2-digit'})}${n.read_at?'':' · '+txt('unread')}</small></button>`).join('')||`<p class="empty">${txt('noNotifications')}</p>`}</div>`);
+ if($('#mark-all-read'))$('#mark-all-read').onclick=async()=>{try{await C.markRead(inbox.filter(n=>!n.read_at).map(n=>n.id));await refreshCloud(true);}catch{toast('syncError');}};
+ document.querySelectorAll('[data-notification]').forEach(button=>button.onclick=async()=>{
+  const n=inbox.find(n=>n.id===button.dataset.notification);try{await C.markRead([n.id]);await refreshCloud(true);const p=state.projects.find(p=>p.id===n.project_id);if(!p)return;state.selected=p.id;close();view='history';render();}catch{toast('syncError');}
+ });
 }
 function authForm(mode='login',email=''){
  if(!C.configured){modal('account',`<p class="notice">${txt('backendNotReady')}</p>`);return;}
- modal(mode==='login'?'signIn':'signUp',`<p class="notice" data-i18n="authNote">${txt('authNote')}</p><form id="auth-form">${field('email','auth-email','text',`required autocomplete="username" minlength="3" maxlength="32" pattern="[A-Za-z0-9][A-Za-z0-9_.-]{2,31}" value="${esc(email)}"`)}${field('password','auth-password','password',`required minlength="10" maxlength="128" autocomplete="${mode==='login'?'current-password':'new-password'}"`)}${actions(mode==='login'?'signIn':'signUp')}</form><button class="text-button" id="auth-switch">${txt(mode==='login'?'signUp':'signIn')}</button>`);
+ modal(mode==='login'?'signIn':'signUp',`<p class="notice" data-i18n="authNote">${txt('authNote')}</p><form id="auth-form">${field('email','auth-email','text',`required autocomplete="username" minlength="3" maxlength="32" pattern="[A-Za-z0-9][A-Za-z0-9_.-]{2,31}" value="${esc(email)}"`)}${field('password','auth-password','password',`required minlength="10" maxlength="128" autocomplete="${mode==='login'?'current-password':'new-password'}"`)}${actions(mode==='login'?'signIn':'signUp')}</form><button class="text-button" id="auth-switch">${txt(mode==='login'?'signUp':'signIn')}</button>${mode==='login'?`<button class="text-button" id="forgot-password" data-i18n="forgotPassword">${txt('forgotPassword')}</button>`:''}`);
  $('#auth-switch').onclick=()=>authForm(mode==='login'?'signup':'login',$('#auth-email').value.trim());
- $('#auth-form').onsubmit=async e=>{e.preventDefault();const email=$('#auth-email').value.trim(),password=$('#auth-password').value,button=e.submitter;button.disabled=true;try{if(mode==='signup'){const signedIn=await C.signup(email,password);if(!signedIn){modal('confirmEmail',`<p class="notice">${txt('confirmEmail')}</p>`);return;}}else await C.login(email,password);await syncSession();}catch(error){if($('#form-error'))$('#form-error').textContent=t(I.dictionaries.kk[error.message]?error.message:'authError');}finally{button.disabled=false;}};
+ if($('#forgot-password'))$('#forgot-password').onclick=()=>recoveryForm($('#auth-email').value.trim());
+ $('#auth-form').onsubmit=async e=>{e.preventDefault();const email=$('#auth-email').value.trim(),password=$('#auth-password').value,button=e.submitter;button.disabled=true;try{if(mode==='signup')await C.signup(email,password);else await C.login(email,password);await syncSession();if(mode==='signup'){try{showRecoveryCode(await C.generateRecovery(password));}catch{securityForm();toast('recoverySetupNeeded');}}}catch(error){if($('#form-error'))$('#form-error').textContent=t(I.dictionaries.kk[error.message]?error.message:'authError');}finally{button.disabled=false;}};
 }
-$('.header-controls').insertAdjacentHTML('beforeend','<span id="cloud-role" class="role-label" hidden></span><span id="account-email" class="account-email"></span><button id="cloud-refresh" class="button" data-i18n="refresh" hidden></button><button id="account-button" class="button" data-i18n="signIn"></button>');
+$('.header-controls').insertAdjacentHTML('beforeend','<span id="sync-status" class="sync-status" aria-live="polite" hidden></span><button id="notifications-button" class="button" hidden></button><button id="security-button" class="button" data-i18n="accountSecurity" hidden></button><span id="cloud-role" class="role-label" hidden></span><span id="account-email" class="account-email"></span><button id="cloud-refresh" class="button" data-i18n="refresh" hidden></button><button id="account-button" class="button" data-i18n="signIn"></button>');
 $('#account-button').onclick=async()=>{if(C.active()){try{await C.logout();await syncSession();}catch{toast('syncError');}}else authForm();};
-$('#cloud-refresh').onclick=()=>refreshCloud();
+$('#cloud-refresh').onclick=()=>refreshCloud(true);
+$('#notifications-button').onclick=showNotifications;$('#security-button').onclick=securityForm;
 const resetDemo=$('#demo').onclick;$('#demo').onclick=()=>{if(!C.active())resetDemo();};
 render();
 C.init(syncSession).then(()=>{if(C.active())return syncSession();}).catch(()=>toast('syncError'));
